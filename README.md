@@ -109,6 +109,7 @@ The above produced the following technical requirements to the tool:
 #### References
 
 - https://github.com/lerna/lerna
+- https://github.com/sindresorhus/np
 - https://github.com/semantic-release/semantic-release
 - https://github.com/semantic-release/cracks
 - https://github.com/bcherny/india , https://github.com/semantic-release/semantic-release/issues/66
