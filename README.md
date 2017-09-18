@@ -1,12 +1,12 @@
-# Zmey Gorynych
-
-A Node.js package versioning and publishing tool, an alternative to [Lerna](https://github.com/lerna/lerna).
-
 <p align="center">
-  <img alt="Zmey Gorynych. Image © Dobrynya Nikitich and Zmey Gorynych, 2006" src="https://user-images.githubusercontent.com/498274/30076044-8c36fa9a-922c-11e7-84e0-87d67cb8ea39.jpg" width="480">
+  <h1>Zmey Gorynych</h1>
 </p>
 <p align="center">
-  <i>Image © Dobrynya Nikitich and Zmey Gorynych, 2006</i>
+  A Node.js package versioning and publishing tool, an alternative to [Lerna](https://github.com/lerna/lerna).
+</p>
+<p align="center">
+  <div><img alt="Zmey Gorynych. Image © Dobrynya Nikitich and Zmey Gorynych, 2006" src="https://user-images.githubusercontent.com/498274/30076044-8c36fa9a-922c-11e7-84e0-87d67cb8ea39.jpg" width="480"></div>
+  <div><sup><i>Image © Dobrynya Nikitich and Zmey Gorynych, 2006</i></sup></div>
 </p>
 
 The tool helps to manage versioning and publishing of Node.js packages that are developed together but do not necessarily belong to a single project.
