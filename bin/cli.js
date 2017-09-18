@@ -143,6 +143,21 @@ function getPackageInfosPromised(dirpaths) {
   });
 }
 
+var _processesToInterrupt = [];
+function makeChildProcessInterruptible(childProcess) {
+  childProcess.on('close', function () {
+    var index = _processesToInterrupt.indexOf(childProcess);
+    if (index >= 0) { _processesToInterrupt.splice(index, 1); }
+  });
+  _processesToInterrupt.push(childProcess);
+}
+function interruptChildProcesses() {
+  _processesToInterrupt.forEach(function (childProcess, childProcessIndex) {
+    childProcess.kill('SIGINT');
+  });
+  _processesToInterrupt.splice(0, _processesToInterrupt.length);
+}
+
 function gitStatusPathPromised(dirpath) {
   return new Promise(function (resolve, reject) {
     var gitProcess = spawn('git', [ 'status', '--untracked-files', '--porcelain', dirpath ]);
@@ -165,10 +180,14 @@ function gitStatusPathPromised(dirpath) {
           };
         }).filter(function (x) { return !!x; }));
       }
+      else if (code === null) {
+        reject(new Error('git status failed: interrupted.'));
+      }
       else {
         reject(new Error('git status failed: code ' + code + '\n' + stdout + '\n' + stderr));
       }
     });
+    makeChildProcessInterruptible(gitProcess);
   });
 }
 
@@ -232,6 +251,9 @@ function npmPromised(cwdpath, npmArgs) {
           stderr: stderr,
         });
       }
+      else if (code === null) {
+        reject(new Error('npm ' + npmArgs.join(' ') + ' failed: interrupted.'));
+      }
       else {
         var error = new Error('npm ' + npmArgs.join(' ') + ' failed: code ' + code + '\n' + stdout + '\n' + stderr);
         error.code = code;
@@ -240,6 +262,7 @@ function npmPromised(cwdpath, npmArgs) {
         reject(error);
       }
     });
+    makeChildProcessInterruptible(npmProcess);
   });
 }
 
@@ -250,7 +273,7 @@ function getLatestVersionFromNpm(packageName) {
   if (_latestVersionsCache[packageName]) {
     return Promise.resolve(_latestVersionsCache[packageName]);
   }
-  return npmPromised(TEMP_PATH, [
+  return npmPromised(CWD, [
     'view', packageName + '@latest', 'version',
   ]).then(function (result) {
     var latestVersion = _latestVersionsCache[packageName] = String(result.stdout).trim();
@@ -260,11 +283,29 @@ function getLatestVersionFromNpm(packageName) {
 
 
 var CWD = process.cwd();
-var TEMP_PATH = path.join(CWD, '.zmey-gorynich-temp');
+var TEMP_PATH = path.join(CWD, '.zmey-gorynych-temp');
 var VERIFY_ROOT_PATH = path.join(TEMP_PATH, 'verify');
 var PUBLISH_ROOT_PATH = path.join(TEMP_PATH, 'registry');
 
-var interrupt = false;
+var rootTask = null;
+var rootError = null;
+var interrupted = false;
+var exiting = false;
+var ctx = {};
+
+
+function renderTitle() {
+  return (
+    (
+      (!ctx.packageInfos || ctx.packageInfos.length <= 0
+        ? 'No'
+        : 'Found ' + chalk.magenta(ctx.packageInfos.length)
+      ) +
+      ' publishable packages' + (program.glob ? ' matching ' + chalk.magenta(program.glob) : '') + ' in ' + chalk.white('./' + path.relative(process.cwd(), CWD))
+    ) +
+    (interrupted && !exiting ? chalk.grey(' - ') + chalk.red('interrupting...') : '')
+  );
+}
 
 
 function processPackage(packageInfo, reportProgress, ctxAll) {
@@ -274,7 +315,7 @@ function processPackage(packageInfo, reportProgress, ctxAll) {
   packageCtx.packageInfo = packageInfo;
 
   function hasInterrupted() {
-    if (interrupt) {
+    if (interrupted) {
       reportProgress('interrupted.');
       return true;
     }
@@ -343,6 +384,7 @@ function processPackage(packageInfo, reportProgress, ctxAll) {
           packageCtx.localInstallPackageJson = null;
           packageCtx.localInstallVersion = null;
           reportProgress('faield to download the latest version.');
+          throw error;
         });
       });
   }
@@ -410,7 +452,7 @@ function processPackage(packageInfo, reportProgress, ctxAll) {
       if (!packageCtx.localInstallPackagePath) {
         return Promise.resolve({
           same: false,
-          dircompareResults: [],
+          diffs: [],
         });
       }
       return Promise.all(packageInfo.packageJson.files.map(function (filesContainer) {
@@ -593,13 +635,13 @@ function processPackage(packageInfo, reportProgress, ctxAll) {
       if (program.upgrade) {
         reportProgress('upgrading the dependencies...');
 
-        function isKnownPackage(packageName) {
+        var isKnownPackage = function (packageName) {
           return ctxAll.packageInfos.some(function (packageInfo) {
             return (packageInfo.packageJson.name === packageName);
           });
-        }
+        };
 
-        function upgradeDependencies(dependencies) {
+        var upgradeDependencies = function (dependencies) {
           if (!dependencies) { return Promise.resolve(dependencies); }
 
           var packageNames = Object.keys(dependencies).filter(isKnownPackage);
@@ -619,7 +661,7 @@ function processPackage(packageInfo, reportProgress, ctxAll) {
             });
             return (changed ? dependenciesUpgraded : dependencies);
           });
-        }
+        };
 
         var packageJsonUpgraded = Object.assign({}, packageInfo.packageJson);
 
@@ -740,25 +782,26 @@ function removeTempDirectoryPromised(ctx, reportProgress) {
     });
 }
 
-
-var ctx = {};
-
 function done() {
   var warningsCount = 0;
 
   return Promise.resolve()
     .then(function () {
-      var packageDirpaths = Object.keys(ctx.packages || {});
-      packageDirpaths.forEach(function (packageDirpath) {
-        var packageCtx = ctx.packages[packageDirpath];
+      if (rootError) {
+        throw rootError;
+      }
+    })
+    .then(function () {
+      ctx.packageInfos.forEach(function (packageInfo) {
+        var packageDirpath = packageInfo.dirpath;
 
         var isWarning = false;
-
         var firstLineString = '';
         var otherLinesString = '';
 
-        var compareResult = packageCtx.compareResult;
-        if (compareResult) {
+        var packageCtx = ctx.packages[packageDirpath];
+        if (packageCtx && packageCtx.compareResult) {
+          var compareResult = packageCtx.compareResult;
           var suggestedVersionBump = (!compareResult.same && !packageCtx.alreadyBumped);
 
           if (suggestedVersionBump) {
@@ -770,12 +813,12 @@ function done() {
           }
           else {
             firstLineString = (compareResult.same
-              ? chalk.green('no version bump: ' + chalk.bold(packageCtx.packageInfo.packageJson.version))
+              ? chalk.green('no version bump: ' + chalk.bold(packageInfo.packageJson.version))
               : (packageCtx.alreadyBumped
-                ? chalk.yellow('version bumped, need publish: ' + chalk.bold(packageCtx.localInstallVersion) + ' -> ' + chalk.bold(packageCtx.packageInfo.packageJson.version))
+                ? chalk.yellow('version bumped, need publish: ' + chalk.bold(packageCtx.localInstallVersion) + ' -> ' + chalk.bold(packageInfo.packageJson.version))
                 : chalk.yellow(
                   'suggested version bump: ' +
-                  chalk.bold(packageCtx.packageInfo.packageJson.version) + ' -> ' +
+                  chalk.bold(packageInfo.packageJson.version) + ' -> ' +
                   chalk.bold(packageCtx.suggestedVersion)
                 )
               )
@@ -812,12 +855,12 @@ function done() {
             );
           }
         }
-        else if (interrupt) {
+        else if (interrupted) {
           firstLineString = chalk.grey('interrupted.');
           isWarning = true;
         }
 
-        if (program.updates && (packageCtx.updates.length > 0 || packageCtx.updatesDev.length > 0)) {
+        if (program.updates && packageCtx && (packageCtx.updates.length > 0 || packageCtx.updatesDev.length > 0)) {
           var makeUpdateLine = function (updateItem) {
             return ('       ' + updateItem.packageName + ': ' + chalk.bold(updateItem.currentVersion) + ' -> ' + chalk.bold(updateItem.latestVersion));
           };
@@ -841,7 +884,7 @@ function done() {
         }
 
         console.log(
-          '   ' + resultCharacter + ' ' + chalk.cyan(packageCtx.packageInfo.packageJson.name) +
+          '   ' + resultCharacter + ' ' + chalk.cyan(packageInfo.packageJson.name) +
           (firstLineString ? ' - ' +  firstLineString : '') +
           otherLinesString
         );
@@ -850,9 +893,17 @@ function done() {
       console.log('\n');
     })
     .then(function () {
-      //return removeDirectoryPromised(TEMP_PATH);
+      if (warningsCount > 0) {
+        // Keep the temporary directory for investigation.
+        return;
+      }
+      else {
+        return removeDirectoryPromised(TEMP_PATH);
+      }
     })
     .then(function () {
+      exiting = true;
+      if (rootTask) { rootTask.title = renderTitle(); }
       if (warningsCount > 0) {
         process.exit(1);
       }
@@ -861,52 +912,73 @@ function done() {
       }
     })
     .catch(function (error) {
-      console.error(error);
+      if (!rootError) {
+        console.error(error);
+      }
       process.exit(2);
     });
 }
 
-function doneAsync() {
+function doneAsync(error) {
+  rootError = error;
   process.nextTick(done);
+}
+
+function interrupt() {
+  interrupted = true;
+  interruptChildProcesses();
+  if (rootTask) { rootTask.title = renderTitle(); }
 }
 
 
 function printIntro() {
   if (!program.intro) { return; }
-  // http://ascii.co.uk/art/dragon
-  console.log([
-    "",
-    "                                                         ____________",
-    "                                   (`-..________....---''  ____..._.-`",
-    "                                    \\\\`._______.._,.---'''     ,'",
-    "                                    ; )`.      __..-'`-.      /",
-    "                                   / /     _.-' _,.;;._ `-._,'",
-    "                                  / /   ,-' _.-'  //   ``--._``._",
-    "                                ,','_.-' ,-' _.- (( =-    -. `-._`-._____",
-    "                              ,;.''__..-'   _..--.\\\\.--'````--.._``-.`-._`.",
-    "               _          |\\,' .-''        ```-'`---'`-...__,._  ``-.`-.`-.`.",
-    "    _     _.-,'(__)\\__)\\-'' `     ___  .          `     \\      `--._",
-    "  ,',)---' /|)          `     `      ``-.   `     /     /     `     `-.",
-    "  \\_____--.  '`  `               __..-.  \\     . (   < _...-----..._   `.",
-    "   \\_,--..__. \\\\ .-`.\\----'';``,..-.__ \\  \\      ,`_. `.,-'`--'`---''`.  )",
-    "             `.\\`.\\  `_.-..' ,'   _,-..'  /..,-''(, ,' ; ( _______`___..'__",
-    "                     ((,(,__(    ((,(,__,'  ``'-- `'`.(\\  `.,..______   SSt",
-    "                                                        ``--------..._``--.__",
-    "",
-  ].join('\n'));
+
+  var npmVersion = null;
+
+  return Promise.resolve()
+    .then(function () {
+      return npmPromised(CWD, [ '--version' ]).then(function (result) {
+        npmVersion = String(result.stdout).trim();
+      });
+    })
+    .then(function () {
+      // http://ascii.co.uk/art/dragon
+      console.log([
+        "",
+        "                                                         ____________",
+        "                                   (`-..________....---''  ____..._.-`",
+        "                                    \\\\`._______.._,.---'''     ,'",
+        "                                    ; )`.      __..-'`-.      /",
+        "                                   / /     _.-' _,.;;._ `-._,'",
+        "                                  / /   ,-' _.-'  //   ``--._``._",
+        "                                ,','_.-' ,-' _.- (( =-    -. `-._`-._____",
+        "                              ,;.''__..-'   _..--.\\\\.--'````--.._``-.`-._`.",
+        "               _          |\\,' .-''        ```-'`---'`-...__,._  ``-.`-.`-.`.",
+        "    _     _.-,'(__)\\__)\\-'' `     ___  .          `     \\      `--._",
+        "  ,',)---' /|)          `     `      ``-.   `     /     /     `     `-.",
+        "  \\_____--.  '`  `               __..-.  \\     . (   < _...-----..._   `.",
+        "   \\_,--..__. \\\\ .-`.\\----'';``,..-.__ \\  \\      ,`_. `.,-'`--'`---''`.  )",
+        "             `.\\`.\\  `_.-..' ,'   _,-..'  /..,-''(, ,' ; ( _______`___..'__",
+        "                     ((,(,__(    ((,(,__,'  ``'-- `'`.(\\  `.,..______   SSt",
+        "                                                        ``--------..._``--.__",
+        "   " + ('node ' + chalk.bold(process.versions.node)) + "   " + ('npm ' + chalk.bold(npmVersion)),
+        "",
+      ].join('\n'));
+    });
 }
 
 
 process.stdin.setRawMode(true);
 process.stdin.resume();
 CtrlC.onPress = function () {
-  interrupt = true;
+  interrupt();
 };
 
 
 Promise.resolve()
   .then(function () {
-    printIntro();
+    return printIntro();
   })
   .then(function () {
     function reportProgress() {}
@@ -916,17 +988,16 @@ Promise.resolve()
       });
   })
   .then(function () {
-    if (ctx.packageInfos.length <= 0) {
-      console.log(
-        'No publishable packages' + (program.glob ? ' matching ' + chalk.magenta(program.glob) : '')
-      );
+    if (!ctx.packageInfos || ctx.packageInfos.length <= 0) {
+      console.log(renderTitle());
       return;
     }
 
     return new Listr([
       {
-        title: 'Found ' + chalk.magenta(ctx.packageInfos.length) + ' publishable packages' + (program.glob ? ' matching ' + chalk.magenta(program.glob) : ''),
-        task: function (ctx) {
+        title: renderTitle(),
+        task: function (ctx, task) {
+          rootTask = task;
           return new Listr(
             ctx.packageInfos.map(function (packageInfo) {
               return {
@@ -938,7 +1009,9 @@ Promise.resolve()
                       ' - ' +
                       chalk.grey(progressText || '...')
                     );
-                  }, ctx);
+                  }, ctx).then(function () {
+                    if (rootTask) { rootTask.title = renderTitle(); }
+                  });
                 },
               };
             }),
@@ -954,4 +1027,7 @@ Promise.resolve()
       renderer: ListrMultilineRenderer,
     }).run(ctx);
   })
-  .then(doneAsync, doneAsync);
+  .then(
+    function () { doneAsync(); },
+    function (error) { doneAsync(error); }
+  );

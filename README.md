@@ -35,6 +35,8 @@ Example output:
    ✔ @example-company/another-package - suggested version bump: 1.0.0-alpha.2 -> 1.0.0-alpha.3
 ```
 
+The tool creates a temporary directory named `.zmey-gorynych-temp` in the current working directory and removes it upon finishing normally; if interrupted, the directory is kept for manual investigation until the next run.
+
 The tool exits with the zero code if no human attention is required, and with a non-zero code otherwise.
 
 See more CLI options by running `zmey --help`.
@@ -86,7 +88,7 @@ The organization legacy that had to be kept in mind at the time of making this t
 - [`semantic-release` requires Node 8](https://github.com/semantic-release/semantic-release/blob/8c44c3176af3d41fd87ac9d9b7a1d2f2d441b75f/README.md#why-does-semantic-release-require-node-version--8) while the organization hasn't yet upgraded.
 - Lerna has a buggy command-line interface (ANSI color markers leaking), maybe related to a similar bug of `npm publish` in the version of `npm` in use.
 
-Adding the idealistic, open-source-centric, Node.js-centric [development conventions](https://github.com/commitizen) and [automation tools](https://github.com/semantic-release/semantic-release) 
+Adding the idealistic, open-source-centric, Node.js-centric [development conventions](https://github.com/commitizen) and [automation tools](https://github.com/semantic-release/semantic-release)
 that are currently being built by the Node.js open-source community turned out to require too much commitment from the engineers that they cannot afford accepting:
 
 - Restructure existing code repositories or create new ones to make them compatible with the open-source community tools. This is unrealistic because the tools should serve the organization, not vice versa.
