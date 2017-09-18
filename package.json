@@ -12,6 +12,9 @@
   "bugs": {
     "url": "https://github.com/sompylasar/zmey-gorynych/issues"
   },
+  "files": [
+    "bin"
+  ],
   "bin": {
     "zmey": "./bin/cli.js"
   },
