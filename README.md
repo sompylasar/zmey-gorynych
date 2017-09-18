@@ -44,9 +44,9 @@ See more CLI options by running `zmey --help`.
 - [x] Show diff between the locally published files and the files from the latest version published to the registry: `--diff`.
 - [x] Suggestion to publish if the version is already bumped.
 - [x] An option to update the `package.json` files with the suggested versions: `--bump`.
-- [x] An option to upgrade the dependencies to the latest versions of the locally developed packages found by the tool: `--upgrade`.
-- [x] An option to publish the next version to the npm registry: `--publish`.
-- [x] An option to filter the packages being touched by their directory name: `--glob <wildcard>`.
+- [x] An option to upgrade the dependencies to the latest published versions of the locally developed packages: `--upgrade`.
+- [x] An option to publish the next versions of the locally developed packages to the npm registry: `--publish`.
+- [x] An option to filter by directory name the packages that will be affected: `--glob <wildcard>`.
 
 ##### Futures
 
