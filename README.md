@@ -2,6 +2,8 @@
 
 A Node.js package versioning and publishing tool, an alternative to [Lerna](https://github.com/lerna/lerna).
 
+[![npm version](https://img.shields.io/npm/v/zmey-gorynych.svg?style=flat-square)](https://www.npmjs.com/package/zmey-gorynych)
+
 <p align="center">
   <img alt="Zmey Gorynych. Image © Dobrynya Nikitich and Zmey Gorynych, 2006" src="https://user-images.githubusercontent.com/498274/30076044-8c36fa9a-922c-11e7-84e0-87d67cb8ea39.jpg" width="480">
 </p>
