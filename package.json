@@ -16,18 +16,21 @@
     "bin"
   ],
   "bin": {
-    "zmey": "./bin/cli.js"
+    "zmey": "./bin/cli.js",
+    "zmey-gorynych": "./bin/cli.js"
   },
   "dependencies": {
     "chalk": "2.1.0",
     "commander": "2.11.0",
     "ctrl-c": "2.2.8",
+    "debug": "^3.1.0",
     "diff": "3.3.1",
     "dir-compare": "1.4.0",
     "download-npm-package": "3.1.10",
     "fs-extra": "4.0.1",
     "listr": "0.12.0",
     "listr-multiline-renderer": "1.0.0",
+    "listr-verbose-renderer": "^0.4.0",
     "minimatch": "3.0.4",
     "npm-check-updates": "2.12.1",
     "rimraf": "2.6.1",

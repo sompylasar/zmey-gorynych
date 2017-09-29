@@ -16,50 +16,75 @@ The tool helps to manage versioning and publishing of Node.js packages that are 
 Read more in the [Features](#features) and [Motivation](#motivation) sections.
 
 
-## Usage
+## Getting started
 
-Install as a global tool:
+Via [`npx`](https://medium.com/@maybekatz/introducing-npx-an-npm-package-runner-55f7d4bd282b):
+```
+npx zmey-gorynych
+```
+
+Via global installation and the shorthand alias:
 ```
 npm install -g zmey-gorynych
-```
-
-Run the tool from within a directory with packages:
-```
 zmey
 ```
 
+See more CLI options with `--help`.
+
+
+## What it does
+
+The tool needs to run from a package root directory, or a directory with a flat list of directories with packages.
+
+Without command-line options, the tool does the following:
+
+- scans the directory to find publishable packages: those with `package.json` that has a `name` and doesn't have the `private` flag set;
+- attempts to install the latest version of each of the packages into a temporary directory;
+- attempts to install dependencies and prepare the package (assumes this happens during `npm install`);
+- imitates publish to the temporary directory;
+- compares the published package files with the previously installed latest version files;
+- suggests a version bump if any difference is found.
+
 Example output:
 ```
- ✔ Found 2 publishable packages
+ ✔ zmey-gorynych found 2 publishable packages in ./
    ✔ @example-company/some-package - no version bump: 1.0.0-alpha.4
    ✔ @example-company/another-package - suggested version bump: 1.0.0-alpha.2 -> 1.0.0-alpha.3
 ```
 
-The tool creates a temporary directory named `.zmey-gorynych-temp` in the current working directory and removes it upon finishing normally; if interrupted, the directory is kept for manual investigation until the next run.
+The tool creates a temporary directory named `.zmey-gorynych-temp` in the current working directory and removes it upon finishing normally unless `--keep-temp` is set to keep it for manual investigation.
 
 The tool exits with the zero code if no human attention is required, and with a non-zero code otherwise.
 
-See more CLI options by running `zmey --help`.
 
 
 ## Features
 
-- [x] Suggestion to bump the version if the locally published files differ from the files from the latest version published to the registry.
-- [x] Show diff between the locally published files and the files from the latest version published to the registry: `--diff`.
-- [x] Suggestion to publish if the version is already bumped.
-- [x] An option to update the `package.json` files with the suggested versions: `--bump`.
-- [x] An option to upgrade the dependencies to the latest published versions of the locally developed packages: `--upgrade`.
-- [x] An option to publish the next versions of the locally developed packages to the npm registry: `--publish`.
-- [x] An option to filter by directory name the packages that will be affected: `--glob <wildcard>`.
+- [x] Processes the current directory when it contains a flat list of directories with packages.
+- [x] Processes the current directory when it's a package.
+- [x] Suggests to bump the version if the locally published files differ from the files from the latest version published to the registry.
+- [x] Shows the diff between the locally published files and the files from the latest version published to the registry: `--diff`.
+- [x] Suggests to publish if the version is already bumped.
+- [x] Optionally, updates the `package.json` files with the suggested versions: `--bump`.
+- [x] Optionally, upgrades the dependencies to the latest published versions of the locally developed packages: `--upgrade`.
+- [x] Optionally, publishes the next versions of the locally developed packages to the npm registry: `--publish`.
+- [x] Optionally, filters by directory name the packages that will be affected: `--glob <wildcard>`.
 
 ##### Futures
 
-- [ ] Better documentation: ["what it does"](https://github.com/semantic-release/cli/blob/6fe3c63123470d74f522593f36714597ae47b18c/README.md#what-it-does).
+- [ ] Documentation: gather feedback and improve the "Getting started" and "What it does" sections.
+- [ ] Documentation: GIF FTW!
+- [ ] Documentation: list supported `node` and `npm` versions.
+- [ ] Tests: try on Lerna-controlled repositories.
+- [ ] Tests: cover utility code.
+- [ ] Tests: cover functions against [a locally spawnable npm registry](https://github.com/verdaccio/verdaccio).
 - [ ] Smarter scan: support for multiple package locations to look for the locally developed packages.
-- [ ] Smarter bump: detect minor changes (e.g. a README, documentation, or comments) and non-breaking changes (e.g. added a new export, added a new file without changing existing ones).
+- [ ] Smarter bump: detect minor changes (e.g. a README, documentation, or comments) and non-breaking changes (e.g. added a new export, added a new file without changing the existing ones).
 - [ ] Smarter upgrade: recursive without the need to publish intermediate versions.
 - [ ] Smarter publish: branch-awareness, [canary, commit-hash versioned](https://github.com/lerna/lerna/blob/54761ba26f8cb6d50d16a4c920d1a9594c19d6e9/README.md#--canary--c) packages.
 - [ ] Smarter publish: [no version committed in package.json](https://github.com/semantic-release/semantic-release/blob/8c44c3176af3d41fd87ac9d9b7a1d2f2d441b75f/README.md#why-is-the-packagejsons-version-not-updated-in-my-repository).
+- [ ] Optionally, `git tag` in the specified format: version only, package name plus version, or a customizable template.
+- [ ] Custom path for the temporary directory.
 
 
 ## Motivation

@@ -9,23 +9,32 @@ var rimraf = require('rimraf');
 var dircompare = require('dir-compare');
 var Listr = require('listr');
 var ListrMultilineRenderer = require('listr-multiline-renderer');
+var ListrVerboseRenderer = require('listr-verbose-renderer');
 var semver = require('semver');
 var downloadNpmPackage = require('download-npm-package');
 var JsDiff = require('diff');
 var program = require('commander');
 var minimatch = require('minimatch');
-var CtrlC = require("ctrl-c");
+var CtrlC = require('ctrl-c');
+var debug = require('debug')('zmey-gorynych');
+
 
 program
-  .option('--glob <wildcard>', 'Only process the matching packages (handled by `minimatch`).')
+  .option('--glob <wildcard>', 'Only process the packages in directories that match (via `minimatch`).')
+  .option('--git-changed-only', 'Only process the packages that have files changed in `git`.')
   .option('--diff', 'Print package content diffs.')
   .option('--updates', 'Print package dependency updates.')
   .option('--bump', 'Bump the versions in package.json files to the suggested versions.')
   .option('--upgrade', 'Upgrade versions of known packages in all packages.')
   .option('--publish', 'Bump the versions in package.json files to the suggested versions and publish to npm.')
   .option('--intro', 'Show the intro picture.')
+  .option('--keep-temp', 'Keep the temporary directory for investigation.')
   .parse(process.argv);
 
+
+function preparePathForDisplay(filepath) {
+  return ('./' + path.relative(process.cwd(), filepath));
+}
 
 function lstatPromised(filepath) {
   return new Promise(function (resolve, reject) {
@@ -131,7 +140,7 @@ function getPackageInfosPromised(dirpaths) {
           packageJson: packageJson,
         };
       }).filter(function (packageInfo) {
-        const packageJson = packageInfo.packageJson;
+        var packageJson = packageInfo.packageJson;
         return !!(
           packageJson &&
           typeof packageJson.name === 'string' && packageJson.name &&
@@ -160,7 +169,9 @@ function interruptChildProcesses() {
 
 function gitStatusPathPromised(dirpath) {
   return new Promise(function (resolve, reject) {
-    var gitProcess = spawn('git', [ 'status', '--untracked-files', '--porcelain', dirpath ]);
+    var gitProcess = spawn('git', [ 'status', '--untracked-files', '--porcelain', dirpath ], {
+      cwd: dirpath,
+    });
     var stdout = '';
     var stderr = '';
     gitProcess.stdout.on('data', function (buffer) {
@@ -181,10 +192,14 @@ function gitStatusPathPromised(dirpath) {
         }).filter(function (x) { return !!x; }));
       }
       else if (code === null) {
-        reject(new Error('git status failed: interrupted.'));
+        var errorToThrow = new Error('git status failed: interrupted.');
+        errorToThrow.name = 'ZmeyGorynychError';
+        reject(errorToThrow);
       }
       else {
-        reject(new Error('git status failed: code ' + code + '\n' + stdout + '\n' + stderr));
+        var errorToThrow = new Error('git status failed: code ' + code + '\n' + stdout + '\n' + stderr);
+        errorToThrow.name = 'ZmeyGorynychError';
+        reject(errorToThrow);
       }
     });
     makeChildProcessInterruptible(gitProcess);
@@ -252,14 +267,17 @@ function npmPromised(cwdpath, npmArgs) {
         });
       }
       else if (code === null) {
-        reject(new Error('npm ' + npmArgs.join(' ') + ' failed: interrupted.'));
+        var errorToThrow = new Error('npm ' + npmArgs.join(' ') + ' failed: interrupted.');
+        errorToThrow.name = 'ZmeyGorynychError';
+        reject(errorToThrow);
       }
       else {
-        var error = new Error('npm ' + npmArgs.join(' ') + ' failed: code ' + code + '\n' + stdout + '\n' + stderr);
-        error.code = code;
-        error.stdout = stdout;
-        error.stderr = stderr;
-        reject(error);
+        var errorToThrow = new Error('npm ' + npmArgs.join(' ') + ' failed: code ' + code + '\n' + stdout + '\n' + stderr);
+        errorToThrow.name = 'ZmeyGorynychError';
+        errorToThrow.code = code;
+        errorToThrow.stdout = stdout;
+        errorToThrow.stderr = stderr;
+        reject(errorToThrow);
       }
     });
     makeChildProcessInterruptible(npmProcess);
@@ -287,21 +305,26 @@ var TEMP_PATH = path.join(CWD, '.zmey-gorynych-temp');
 var VERIFY_ROOT_PATH = path.join(TEMP_PATH, 'verify');
 var PUBLISH_ROOT_PATH = path.join(TEMP_PATH, 'registry');
 
-var rootTask = null;
 var rootError = null;
+var rootTask = null;
+var rootTaskError = null;
 var interrupted = false;
 var exiting = false;
 var ctx = {};
 
 
 function renderTitle() {
+  var packageCount = ((ctx.packageInfos && ctx.packageInfos.length) || 0);
   return (
     (
-      (!ctx.packageInfos || ctx.packageInfos.length <= 0
-        ? 'No'
-        : 'Found ' + chalk.magenta(ctx.packageInfos.length)
+      'zmey-gorynych ' +
+      (packageCount <= 0
+        ? 'found ' + chalk.bold(chalk.red('no'))
+        : 'found ' + chalk.bold(chalk.magenta(packageCount))
       ) +
-      ' publishable packages' + (program.glob ? ' matching ' + chalk.magenta(program.glob) : '') + ' in ' + chalk.white('./' + path.relative(process.cwd(), CWD))
+      ' publishable ' + (packageCount > 1 ? 'packages' : 'package') +
+      (program.glob ? ' matching ' + chalk.magenta(program.glob) : '') +
+      ' in ' + chalk.white(preparePathForDisplay(CWD))
     ) +
     (interrupted && !exiting ? chalk.grey(' - ') + chalk.red('interrupting...') : '')
   );
@@ -326,11 +349,17 @@ function processPackage(packageInfo, reportProgress, ctxAll) {
     return !packageCtx.packageVerified;
   }
 
+  function skipUnchanged() {
+    return (program.gitChangedOnly && !packageCtx.hasUncommittedChanges);
+  }
+
   function verifyPackage() {
     reportProgress('verifying package...');
 
     packageCtx.packageLocalPublishRootPath = path.join(PUBLISH_ROOT_PATH, packageInfo.packageJson.name.replace(/^[^\/]+\//, ''));
     packageCtx.packageVerifyRootPath = path.join(VERIFY_ROOT_PATH, packageInfo.packageJson.name.replace(/^[^\/]+\//, ''));
+
+    // NOTE(@sompylasar): For now, the verification is a no-op.
     packageCtx.packageVerified = true;
   }
 
@@ -389,13 +418,43 @@ function processPackage(packageInfo, reportProgress, ctxAll) {
       });
   }
 
+  function verifyBuildAfterInstall() {
+    reportProgress('verifying the prepared package...');
+
+    return Promise.all(packageInfo.packageJson.files.map(function (filesContainer) {
+      var builtVersionPath = path.join(packageInfo.dirpath, filesContainer);
+      return lstatPromised(builtVersionPath)
+        .catch(function (error) {
+          if (error.code === 'ENOENT') {
+            var errorToThrow = new Error(
+              'Missing files for publish: `' + filesContainer + '`. ' +
+              'Probably, `npm install` does not trigger the build.'
+            );
+            errorToThrow.name = 'ZmeyGorynychError';
+            throw errorToThrow;
+          }
+          else {
+            var errorToThrow = new Error(
+              'Failed to verify required files for publish: `' + filesContainer + '`. ' +
+              error.message
+            );
+            errorToThrow.name = 'ZmeyGorynychError';
+            throw errorToThrow;
+          }
+        });
+    })).then(function () {
+      reportProgress('verified the prepared package.');
+    });
+  }
+
   function buildPackageFromSource() {
-    reportProgress('installing the dependencies and building the package...');
+    reportProgress('installing the dependencies and preparing the package...');
 
     return npmPromised(packageInfo.dirpath, [
       'install',
     ]).then(function () {
-      reportProgress('built the package.');
+      reportProgress('installed the dependencies.');
+      return verifyBuildAfterInstall();
     });
   }
 
@@ -436,6 +495,13 @@ function processPackage(packageInfo, reportProgress, ctxAll) {
               if (error) { reject(error); }
               else { resolve(); }
             });
+          }).catch(function (error) {
+            var errorToThrow = new Error(
+              'Failed to copy files for publish: `' + filesContainer + '`. ' +
+              error.message
+            );
+            errorToThrow.name = 'ZmeyGorynychError';
+            throw errorToThrow;
           });
         })).then(function () {
           return writeLocalPublishPackageJson();
@@ -481,11 +547,25 @@ function processPackage(packageInfo, reportProgress, ctxAll) {
             return (diff.state !== 'equal' && !/\.map$/.test(diff.name1));
           }));
         }, []).map(function (diff) {
-          var path1 = path.join(diff.path1, diff.name1);
-          var path2 = path.join(diff.path2, diff.name2);
-          var relativePath = path.relative(packageCtx.localInstallPackagePath, path1);
-          var content1 = String(fs.readFileSync(path1));
-          var content2 = String(fs.readFileSync(path2));
+          var path1 = (diff.path1 ? path.join(diff.path1, diff.name1) : undefined);
+          var path2 = (diff.path2 ? path.join(diff.path2, diff.name2) : undefined);
+          var relativePath = (
+            path1
+              ? path.relative(packageCtx.localInstallPackagePath, path1)
+              : (
+                path2
+                  ? path.relative(packageCtx.packageLocalPublishRootPath, path2)
+                  : undefined
+              )
+          );
+          if (!relativePath) {
+            return {
+              relativePath: undefined,
+              jsdiff: undefined,
+            };
+          }
+          var content1 = (path1 ? String(fs.readFileSync(path1)) : '');
+          var content2 = (path2 ? String(fs.readFileSync(path2)) : '');
           return {
             relativePath: relativePath,
             jsdiff: JsDiff.structuredPatch(
@@ -500,13 +580,16 @@ function processPackage(packageInfo, reportProgress, ctxAll) {
         }));
 
         diffs = diffs.filter(function (diff) {
-          return (diff.jsdiff.hunks.length > 0);
+          return (diff.jsdiff && diff.jsdiff.hunks.length > 0);
         });
 
         return {
           same: (diffs.length <= 0),
           diffs: diffs,
         };
+      }).catch(function (ex) {
+        debug(ex.stack);
+        throw ex;
       });
     }
 
@@ -623,15 +706,26 @@ function processPackage(packageInfo, reportProgress, ctxAll) {
     .then(function () {
       if (hasInterrupted()) { return; }
       if (skipUnverified()) { return; }
-      return checkGitStatus();
+      if (program.gitChangedOnly) {
+        return checkGitStatus()
+          .then(function () {
+            if (skipUnchanged()) {
+              packageCtx.skippedNoSourceChanges = true;
+              reportProgress('skipped, no source changes.');
+            }
+          });
+      }
     })
     .then(function () {
       if (hasInterrupted()) { return; }
       if (skipUnverified()) { return; }
+      if (skipUnchanged()) { return; }
       return downloadLatestVersion();
     })
     .then(function () {
       if (hasInterrupted()) { return; }
+      if (skipUnverified()) { return; }
+      if (skipUnchanged()) { return; }
       if (program.upgrade) {
         reportProgress('upgrading the dependencies...');
 
@@ -692,26 +786,31 @@ function processPackage(packageInfo, reportProgress, ctxAll) {
     .then(function () {
       if (hasInterrupted()) { return; }
       if (skipUnverified()) { return; }
+      if (skipUnchanged()) { return; }
       return buildPackageFromSource();
     })
     .then(function () {
       if (hasInterrupted()) { return; }
       if (skipUnverified()) { return; }
+      if (skipUnchanged()) { return; }
       return publishLocal();
     })
     .then(function () {
       if (hasInterrupted()) { return; }
       if (skipUnverified()) { return; }
+      if (skipUnchanged()) { return; }
       return compareLocalPublishWithLocalInstall();
     })
     .then(function () {
       if (hasInterrupted()) { return; }
       if (skipUnverified()) { return; }
+      if (skipUnchanged()) { return; }
       return getLatestVersionsOfDependencies();
     })
     .then(function () {
       if (hasInterrupted()) { return; }
       if (skipUnverified()) { return; }
+      if (skipUnchanged()) { return; }
       if (!packageCtx.compareResult.same) {
         if (packageCtx.writtenBump) {
           reportProgress('found changes, bumped version.');
@@ -747,57 +846,82 @@ function processPackage(packageInfo, reportProgress, ctxAll) {
 }
 
 function getListOfPackages(ctx, reportProgress) {
-  reportProgress('getting the list of packages...');
+  reportProgress('looking for packages...');
   return Promise.resolve()
     .then(function () {
-      reportProgress('getting subdirectories of ./' + path.relative(process.cwd(), CWD));
-      return getChildInfosPromised(CWD).then(function (childInfos) {
-        ctx.childpaths = childInfos.map(function (childInfo) {
-          var match = (!program.glob || minimatch(childInfo.childname, program.glob));
-          if (!match) {
-            return null;
-          }
-          if (childInfo.lstat.isDirectory()) {
-            return childInfo.childpath;
-          }
-          else {
-            return null;
-          }
-        }).filter(function (x) { return !!x; });
-      });
+      reportProgress('checking if ' + preparePathForDisplay(CWD) + ' contains a package...');
+      return getPackageInfosPromised([ CWD ]);
     })
-    .then(function (childpaths) {
-      reportProgress('getting package infos from subdirectories...');
-      return getPackageInfosPromised(ctx.childpaths).then(function (packageInfos) {
+    .then(function (packageInfos) {
+      if (packageInfos.length === 1) {
+        reportProgress('found single package in ' + preparePathForDisplay(CWD));
         ctx.packageInfos = packageInfos;
-      });
+        return;
+      }
+
+      reportProgress('looking into subdirectories of ' + preparePathForDisplay(CWD));
+      return getChildInfosPromised(CWD)
+        .then(function (childInfos) {
+          ctx.childpaths = childInfos.map(function (childInfo) {
+            var match = (!program.glob || minimatch(childInfo.childname, program.glob));
+            if (!match) {
+              return null;
+            }
+            if (childInfo.lstat.isDirectory()) {
+              return childInfo.childpath;
+            }
+            else {
+              return null;
+            }
+          }).filter(function (x) { return !!x; });
+        })
+        .then(function (childpaths) {
+          reportProgress('looking for packages in subdirectories of ' + preparePathForDisplay(CWD));
+          return getPackageInfosPromised(ctx.childpaths).then(function (packageInfos) {
+            ctx.packageInfos = packageInfos;
+          });
+        });
     });
 }
 
-function removeTempDirectoryPromised(ctx, reportProgress) {
-  reportProgress('removing temporary directory ./' + path.relative(process.cwd(), TEMP_PATH));
-  return Promise.resolve()
-    .then(function () {
-      return removeDirectoryPromised(TEMP_PATH);
-    });
+function renderPackageTitle(name, text) {
+  return (
+    chalk.cyan(name) +
+    (text ? ' - ' + text : '')
+  );
 }
 
 function done() {
-  var warningsCount = 0;
+  var attentionCount = 0;
 
   return Promise.resolve()
     .then(function () {
-      if (rootError) {
-        throw rootError;
-      }
-    })
-    .then(function () {
+      if (rootError !== rootTaskError) { return; }
+
       ctx.packageInfos.forEach(function (packageInfo) {
         var packageDirpath = packageInfo.dirpath;
+        var error = packageInfo.error;
 
         var isWarning = false;
         var firstLineString = '';
         var otherLinesString = '';
+
+        if (error) {
+          otherLinesString += (
+            '\n' +
+            chalk.red('     → ' +
+              (error.name !== 'Error' && error.name !== 'ZmeyGorynychError' ? error.name + ': ' : '') +
+              error.message
+            ) +
+            '\n' +
+            (error.name !== 'ZmeyGorynychError'
+              ? chalk.grey(
+                String(error.stack).replace(/^.*\n/, '').replace(/^\s*/gm, '         ')
+              )
+              : ''
+            )
+          );
+        }
 
         var packageCtx = ctx.packages[packageDirpath];
         if (packageCtx && packageCtx.compareResult) {
@@ -815,10 +939,10 @@ function done() {
             firstLineString = (compareResult.same
               ? chalk.green('no version bump: ' + chalk.bold(packageInfo.packageJson.version))
               : (packageCtx.alreadyBumped
-                ? chalk.yellow('version bumped, need publish: ' + chalk.bold(packageCtx.localInstallVersion) + ' -> ' + chalk.bold(packageInfo.packageJson.version))
+                ? chalk.yellow('version bumped, need publish: ' + chalk.bold(packageCtx.localInstallVersion) + ' → ' + chalk.bold(packageInfo.packageJson.version))
                 : chalk.yellow(
                   'suggested version bump: ' +
-                  chalk.bold(packageInfo.packageJson.version) + ' -> ' +
+                  chalk.bold(packageInfo.packageJson.version) + ' → ' +
                   chalk.bold(packageCtx.suggestedVersion)
                 )
               )
@@ -834,7 +958,7 @@ function done() {
                     return accu.concat([
                       '\n' + chalk.magenta('./' + diff.relativePath) + chalk.grey(
                         ' @ ' +
-                        '' + hunk.oldStart + '-' + (hunk.oldStart + hunk.oldLines) + ' -> ' +
+                        '' + hunk.oldStart + '-' + (hunk.oldStart + hunk.oldLines) + ' → ' +
                         '' + hunk.newStart + '-' + (hunk.newStart + hunk.newLines)
                       ),
                     ]).concat(
@@ -855,14 +979,21 @@ function done() {
             );
           }
         }
+        else if (packageCtx && packageCtx.skippedNoSourceChanges) {
+          firstLineString = chalk.grey('skipped, no source changes.');
+        }
         else if (interrupted) {
           firstLineString = chalk.grey('interrupted.');
           isWarning = true;
         }
 
+        if (error && !firstLineString) {
+          firstLineString = chalk.red('error.');
+        }
+
         if (program.updates && packageCtx && (packageCtx.updates.length > 0 || packageCtx.updatesDev.length > 0)) {
           var makeUpdateLine = function (updateItem) {
-            return ('       ' + updateItem.packageName + ': ' + chalk.bold(updateItem.currentVersion) + ' -> ' + chalk.bold(updateItem.latestVersion));
+            return ('       ' + updateItem.packageName + ': ' + chalk.bold(updateItem.currentVersion) + ' → ' + chalk.bold(updateItem.latestVersion));
           };
 
           otherLinesString += (
@@ -878,14 +1009,18 @@ function done() {
         }
 
         var resultCharacter = chalk.green('✔');
-        if (isWarning) {
+        if (error) {
+          resultCharacter = chalk.red('✖');
+          ++attentionCount;
+        }
+        else if (isWarning) {
           resultCharacter = chalk.yellow('⚠');
-          ++warningsCount;
+          ++attentionCount;
         }
 
         console.log(
-          '   ' + resultCharacter + ' ' + chalk.cyan(packageInfo.packageJson.name) +
-          (firstLineString ? ' - ' +  firstLineString : '') +
+          '   ' + resultCharacter + ' ' +
+          renderPackageTitle(packageInfo.packageJson.name, firstLineString) +
           otherLinesString
         );
       });
@@ -893,7 +1028,7 @@ function done() {
       console.log('\n');
     })
     .then(function () {
-      if (warningsCount > 0) {
+      if (program.keepTemp) {
         // Keep the temporary directory for investigation.
         return;
       }
@@ -904,7 +1039,7 @@ function done() {
     .then(function () {
       exiting = true;
       if (rootTask) { rootTask.title = renderTitle(); }
-      if (warningsCount > 0) {
+      if (attentionCount > 0) {
         process.exit(1);
       }
       else {
@@ -912,15 +1047,19 @@ function done() {
       }
     })
     .catch(function (error) {
-      if (!rootError) {
-        console.error(error);
+      rootError = rootError || error;
+    })
+    .then(function () {
+      if (rootError) {
+        if (rootError !== rootTaskError) {
+          console.error(rootError);
+        }
+        process.exit(2);
       }
-      process.exit(2);
     });
 }
 
 function doneAsync(error) {
-  rootError = error;
   process.nextTick(done);
 }
 
@@ -981,11 +1120,11 @@ Promise.resolve()
     return printIntro();
   })
   .then(function () {
+    return removeDirectoryPromised(TEMP_PATH);
+  })
+  .then(function () {
     function reportProgress() {}
-    return getListOfPackages(ctx, reportProgress)
-      .then(function () {
-        return removeTempDirectoryPromised(ctx, reportProgress);
-      });
+    return getListOfPackages(ctx, reportProgress);
   })
   .then(function () {
     if (!ctx.packageInfos || ctx.packageInfos.length <= 0) {
@@ -1003,14 +1142,25 @@ Promise.resolve()
               return {
                 title: packageInfo.packageJson.name,
                 task: function (ctx, task) {
-                  return processPackage(packageInfo, function (progressText) {
-                    task.title = (
-                      chalk.cyan(packageInfo.packageJson.name) +
-                      ' - ' +
-                      chalk.grey(progressText || '...')
-                    );
-                  }, ctx).then(function () {
-                    if (rootTask) { rootTask.title = renderTitle(); }
+                  return processPackage(
+                    packageInfo,
+                    function (progressText) {
+                      var title = renderPackageTitle(packageInfo.packageJson.name, chalk.grey(progressText || '...'));
+                      if (title !== task.title) {
+                        task.title = title;
+                      }
+                    },
+                    ctx
+                  ).then(function () {
+                    if (rootTask) {
+                      var title = renderTitle();
+                      if (title !== rootTask.title) {
+                        rootTask.title = title;
+                      }
+                    }
+                  }).catch(function (error) {
+                    task.title = renderPackageTitle(packageInfo.packageJson.name, chalk.red('error.'));
+                    packageInfo.error = error;
                   });
                 },
               };
@@ -1024,10 +1174,12 @@ Promise.resolve()
       },
     ], {
       collapse: true,
-      renderer: ListrMultilineRenderer,
-    }).run(ctx);
+      renderer: (debug.enabled ? ListrVerboseRenderer : ListrMultilineRenderer),
+    }).run(ctx).catch(function (error) {
+      rootTaskError = error;
+    });
   })
-  .then(
-    function () { doneAsync(); },
-    function (error) { doneAsync(error); }
-  );
+  .catch(function (error) {
+    rootError = error;
+  })
+  .then(doneAsync);
