@@ -241,7 +241,7 @@ function makeDirectoryDeepPromised(dirpath) {
 }
 
 function writePackageJson(packageJsonPath, packageJson) {
-  var packageJsonString = JSON.stringify(packageJson, null, 2);
+  var packageJsonString = (JSON.stringify(packageJson, null, 2) + '\n');
   return writeFilePromised(packageJsonPath, packageJsonString);
 }
 
@@ -462,10 +462,8 @@ function processPackage(packageInfo, reportProgress, ctxAll) {
     var localPublishPackageJson = Object.assign({}, packageInfo.packageJson, {
       scripts: {}
     });
-    return writeFilePromised(
-      path.join(packageCtx.packageLocalPublishRootPath, 'package.json'),
-      JSON.stringify(localPublishPackageJson, null, 2)
-    ).then(function () {
+    var localPublishPackageJsonPath = path.join(packageCtx.packageLocalPublishRootPath, 'package.json');
+    return writePackageJson(localPublishPackageJsonPath, localPublishPackageJson).then(function () {
       packageCtx.localPublishPackageJson = localPublishPackageJson;
     });
   }
