@@ -24,7 +24,7 @@
     "commander": "2.11.0",
     "ctrl-c": "2.2.8",
     "debug": "^3.1.0",
-    "diff": "3.3.1",
+    "diff": "4.0.1",
     "dir-compare": "1.4.0",
     "download-npm-package": "3.1.10",
     "fs-extra": "4.0.1",
